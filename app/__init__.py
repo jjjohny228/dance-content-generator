@@ -1,0 +1,1 @@
+"""Dance challenge video generator."""
