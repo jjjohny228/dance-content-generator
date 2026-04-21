@@ -65,6 +65,7 @@ class EncodingConfig:
 class PathConfig:
     source_dir: Path = PROJECT_ROOT / "source"
     challengers_dir: Path = PROJECT_ROOT / "source_challangers"
+    what_is_better_dir: Path = PROJECT_ROOT / "source_what_is_better"
     backgrounds_dir: Path = PROJECT_ROOT / "resources" / "background_videos"
     commentators_dir: Path = PROJECT_ROOT / "resources" / "commentators"
     emojis_dir: Path = PROJECT_ROOT / "resources" / "emojis"
@@ -81,6 +82,7 @@ class AppConfig:
     encoding: EncodingConfig = field(default_factory=EncodingConfig)
     random_seed: int | None = None
     include_commentator: bool = True
+    render_mode: str = "classic"
     supported_video_extensions: tuple[str, ...] = (".mp4", ".mov", ".mkv", ".avi", ".webm")
 
 

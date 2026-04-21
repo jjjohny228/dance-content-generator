@@ -22,9 +22,14 @@ class RenderPlan:
     opponent_label: str
     me_emoji_path: Path
     opponent_emoji_path: Path
+    mode: str = "classic"
+    title_text: str = ""
 
 
 def build_ffmpeg_command(plan: RenderPlan, config: AppConfig) -> list[str]:
+    if plan.mode == "what-is-better":
+        return _build_what_is_better_command(plan, config)
+
     layout = config.layout
     chroma = config.chroma_key
     encoding = config.encoding
@@ -163,6 +168,126 @@ def build_ffmpeg_command(plan: RenderPlan, config: AppConfig) -> list[str]:
     return command
 
 
+def _build_what_is_better_command(plan: RenderPlan, config: AppConfig) -> list[str]:
+    layout = config.layout
+    chroma = config.chroma_key
+    encoding = config.encoding
+    first_duration = plan.source.duration
+    second_duration = plan.opponent.duration
+    total_duration = first_duration + second_duration
+    commentator_y = layout.bottom_y + layout.bottom_height - layout.commentator_height - layout.commentator_bottom_margin
+    title_center_x = layout.canvas_width / 2
+
+    filter_parts = [
+        f"color=c=black:s={layout.canvas_width}x{layout.canvas_height}:d={total_duration:.3f}[base]",
+        (
+            f"[0:v]fps={layout.fps},"
+            f"scale={layout.slot_width}:{layout.slot_height}:force_original_aspect_ratio=increase,"
+            f"crop={layout.slot_width}:{layout.slot_height},setsar=1,"
+            f"tpad=stop_mode=clone:stop_duration={second_duration:.3f},"
+            f"trim=duration={total_duration:.3f}[leftseq]"
+        ),
+        (
+            f"[1:v]fps={layout.fps},"
+            f"scale={layout.slot_width}:{layout.slot_height}:force_original_aspect_ratio=increase,"
+            f"crop={layout.slot_width}:{layout.slot_height},setsar=1[oppbase]"
+        ),
+        "[oppbase]split=2[oppstillsrc][oppplaysrc]",
+        (
+            f"[oppstillsrc]trim=end_frame=1,setpts=PTS-STARTPTS,"
+            f"tpad=stop_mode=clone:stop_duration={first_duration:.3f},"
+            f"trim=duration={first_duration:.3f}[oppstill]"
+        ),
+        f"[oppplaysrc]trim=duration={second_duration:.3f},setpts=PTS-STARTPTS+{first_duration:.3f}/TB[oppplay]",
+        (
+            f"[2:v]fps={layout.fps},"
+            f"scale={layout.canvas_width}:{layout.bottom_height}:force_original_aspect_ratio=increase,"
+            f"crop={layout.canvas_width}:{layout.bottom_height},setsar=1[bgv]"
+        ),
+        f"[base][bgv]overlay=0:{layout.bottom_y}[step1]",
+        f"[step1][leftseq]overlay={layout.left_x}:{layout.top_margin}[step2]",
+        f"[step2][oppstill]overlay={layout.right_x}:{layout.top_margin}:enable='lt(t,{first_duration:.3f})'[step3]",
+        (
+            f"[step3][oppplay]overlay={layout.right_x}:{layout.top_margin}:"
+            f"enable='between(t,{first_duration:.3f},{total_duration:.3f})':"
+            f"eof_action=pass:repeatlast=0[step4]"
+        ),
+    ]
+
+    current_stream = "[step4]"
+    if config.include_commentator:
+        filter_parts.extend(
+            [
+                (
+                    f"[3:v]fps={layout.fps},chromakey={chroma.color}:{chroma.similarity}:{chroma.blend},"
+                    f"scale=-2:{layout.commentator_height},setsar=1[commentator]"
+                ),
+                f"[step4][commentator]overlay=(W-w)/2:{commentator_y}:format=auto[step5]",
+            ]
+        )
+        current_stream = "[step5]"
+
+    filter_parts.append(
+        _drawtext_filter(current_stream, "[vout]", plan.title_text, title_center_x, layout.label_y, config)
+    )
+
+    audio_parts = []
+    first_audio = _audio_stream_label(0, plan.source, first_duration, "aseq0")
+    second_audio = _audio_stream_label(1, plan.opponent, second_duration, "aseq1")
+    audio_parts.extend([first_audio, second_audio, "[aseq0][aseq1]concat=n=2:v=0:a=1[aout]"])
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(plan.source.path),
+        "-i",
+        str(plan.opponent.path),
+        "-ss",
+        f"{plan.background_offset:.3f}",
+        "-i",
+        str(plan.background.path),
+    ]
+    if config.include_commentator:
+        command.extend(
+            [
+                "-ss",
+                f"{plan.commentator_offset:.3f}",
+                "-i",
+                str(plan.commentator.path),
+            ]
+        )
+
+    command.extend(
+        [
+            "-filter_complex",
+            ";".join(filter_parts + audio_parts),
+            "-map",
+            "[vout]",
+            "-map",
+            "[aout]",
+            "-t",
+            f"{total_duration:.3f}",
+            "-c:v",
+            encoding.video_codec,
+            "-preset",
+            encoding.preset,
+            "-crf",
+            str(encoding.crf),
+            "-pix_fmt",
+            encoding.pix_fmt,
+            "-c:a",
+            encoding.audio_codec,
+            "-b:a",
+            encoding.audio_bitrate,
+            "-movflags",
+            encoding.movflags,
+            str(plan.output_path),
+        ]
+    )
+    return command
+
+
 def command_as_shell(command: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in command)
 
@@ -229,3 +354,9 @@ def _escape_drawtext_text(text: str) -> str:
         .replace("[", r"\[")
         .replace("]", r"\]")
     )
+
+
+def _audio_stream_label(input_index: int, media: MediaFile, duration: float, target: str) -> str:
+    if media.has_audio:
+        return f"[{input_index}:a]atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[{target}]"
+    return f"anullsrc=r=48000:cl=stereo,atrim=duration={duration:.3f}[{target}]"

@@ -12,6 +12,7 @@ from app.config import AppConfig
 class MediaFile:
     path: Path
     duration: float
+    has_audio: bool
 
 
 def ensure_runtime_dependencies() -> None:
@@ -31,6 +32,7 @@ def ensure_directories(config: AppConfig) -> None:
     for directory in (
         config.paths.source_dir,
         config.paths.challengers_dir,
+        config.paths.what_is_better_dir,
         config.paths.backgrounds_dir,
         config.paths.commentators_dir,
         config.paths.emojis_dir,
@@ -64,8 +66,26 @@ def list_video_files(directory: Path, extensions: tuple[str, ...]) -> list[Path]
     return sorted(files)
 
 
+def video_has_audio(path: Path) -> bool:
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "a",
+        "-show_entries",
+        "stream=index",
+        "-of",
+        "json",
+        str(path),
+    ]
+    result = subprocess.run(command, check=True, capture_output=True, text=True)
+    payload = json.loads(result.stdout)
+    return bool(payload.get("streams"))
+
+
 def load_media_files(paths: list[Path]) -> list[MediaFile]:
-    return [MediaFile(path=path, duration=get_video_duration(path)) for path in paths]
+    return [MediaFile(path=path, duration=get_video_duration(path), has_audio=video_has_audio(path)) for path in paths]
 
 
 def find_single_source(config: AppConfig) -> MediaFile:
@@ -74,7 +94,12 @@ def find_single_source(config: AppConfig) -> MediaFile:
         raise RuntimeError(
             f"'source' must contain exactly one video file. Found {len(source_files)} file(s) in {config.paths.source_dir}."
         )
-    return MediaFile(path=source_files[0], duration=get_video_duration(source_files[0]))
+    source_path = source_files[0]
+    return MediaFile(
+        path=source_path,
+        duration=get_video_duration(source_path),
+        has_audio=video_has_audio(source_path),
+    )
 
 
 def find_pool(directory: Path, config: AppConfig, label: str) -> list[MediaFile]:
